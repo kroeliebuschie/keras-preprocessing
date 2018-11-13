@@ -1864,7 +1864,11 @@ class DirectoryIterator(Iterator):
                  follow_links=False,
                  subset=None,
                  interpolation='nearest',
-                 dtype='float32'):
+                 dtype='float32',
+                 n_channels=None,
+                 matching_range=None,
+                 num_range=None):
+
         super(DirectoryIterator, self).common_init(image_data_generator,
                                                    target_size,
                                                    color_mode,
@@ -1914,7 +1918,27 @@ class DirectoryIterator(Iterator):
             classes, filenames = res.get()
             classes_list.append(classes)
             self.filenames += filenames
-        self.samples = len(self.filenames)
+        if n_channels is None:
+            self.samples = len(self.filenames)
+        else:
+            self.samples = len(self.filenames) / n_channels
+
+        if matching_range is not None:
+            start, stop   = matching_range
+            resdict = dict()
+            for fn in self.filenames:
+                sub_fn = fn[start:stop]
+                if sub_fn in resdict.keys():
+                    resdict[sub_fn] += [fn]
+                else:
+                    resdict[sub_fn] = [fn]
+            reslist = []
+            for key in resdict.keys():
+                reslist += [ resdict[keys] ]
+            self.filenames = reslist
+        else:
+            pass #TODO: check if both vaars are set
+
         self.classes = np.zeros((self.samples,), dtype='int32')
         for classes in classes_list:
             self.classes[i:i + len(classes)] = classes
@@ -1935,16 +1959,44 @@ class DirectoryIterator(Iterator):
             dtype=self.dtype)
         # build batch of image data
         for i, j in enumerate(index_array):
-            fname = self.filenames[j]
-            img = load_img(os.path.join(self.directory, fname),
-                           color_mode=self.color_mode,
-                           target_size=self.target_size,
-                           interpolation=self.interpolation)
-            x = img_to_array(img, data_format=self.data_format)
-            # Pillow images should be closed after `load_img`,
-            # but not PIL images.
-            if hasattr(img, 'close'):
-                img.close()
+            if num_range is not None:
+                start, stop = num_range
+                fnames = self.filenames[j]
+                arr_list = []
+                for fname in fnames:
+                    img = load_img(os.path.join(self.directory, fname),
+                               color_mode=self.color_mode,
+                               target_size=self.target_size,
+                               interpolation=self.interpolation)
+                    y = img_to_array(img, data_format=self.data_format)
+                    if self.data_format == 'channels_first'  and y[0] != 1:
+                        raise ValueError("image contains more than 1 channel")
+                    elif self.data_format == 'channels_last' and y[2] != 1:
+                        raise ValueError("image contains more than 1 channel")
+                    arr_list += [y]
+                    # Pillow images should be closed after `load_img`,
+                    # but not PIL images.
+                    if hasattr(img, 'close'):
+                        img.close()
+                order_list = [ int(fn[start:stop]) for fn in fnames ]
+                arr_list = [x for i, x in sorted(zip(order_list, arr_list))]
+                x = np.stack(arr_list)
+                if self.data_format == 'channels_first' and shape[0] != self.n_channels:
+                    raise ValueError("number of channels incorrect. Got " + shape[0] + " while n_channels was set to " + self.n_channels)
+                if self.data_format == 'channels_last'  and shape[2] != self.n_channels:
+                    raise ValueError("number of channels incorrect. Got " + shape[2] + " while n_channels was set to " + self.n_channels)
+            else:
+                fname = self.filenames[j]
+                img = load_img(os.path.join(self.directory, fname),
+                               color_mode=self.color_mode,
+                               target_size=self.target_size,
+                               interpolation=self.interpolation)
+
+                x = img_to_array(img, data_format=self.data_format)
+                # Pillow images should be closed after `load_img`,
+                # but not PIL images.
+                if hasattr(img, 'close'):
+                    img.close()
             params = self.image_data_generator.get_random_transform(x.shape)
             x = self.image_data_generator.apply_transform(x, params)
             x = self.image_data_generator.standardize(x)
